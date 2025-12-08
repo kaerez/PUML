@@ -1,0 +1,41 @@
+daemon off;
+worker_processes 4;
+
+events {
+    use epoll;
+    accept_mutex on;
+    worker_connections 1024;
+}
+
+http {
+    access_log off;
+    error_log logs/nginx/error.log;
+    default_type application/octet-stream;
+    sendfile on;
+
+    server {
+        # 1. Listen on Heroku's public port
+        listen <%= ENV["PORT"] %>;
+        server_name _;
+
+        location / {
+            # 2. Add the Missing CORS Headers
+            add_header 'Access-Control-Allow-Origin' '*' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
+
+            # 3. Handle "Preflight" OPTIONS requests (Required for fetch)
+            if ($request_method = 'OPTIONS') {
+                add_header 'Access-Control-Allow-Origin' '*' always;
+                add_header 'Access-Control-Max-Age' 1728000;
+                add_header 'Content-Type' 'text/plain; charset=utf-8';
+                add_header 'Content-Length' 0;
+                return 204;
+            }
+
+            # 4. Forward traffic to PlantUML (running locally on port 8080)
+            proxy_pass http://127.0.0.1:8080;
+            proxy_redirect off;
+        }
+    }
+}
