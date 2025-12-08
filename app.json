@@ -1,10 +1,10 @@
 {
-  "name": "Java Server",
-  "description": "Java application running with picoweb argument",
-  "keywords": ["java", "picoweb"],
+  "name": "PlantUML Server",
+  "description": "Full PlantUML Web App running on Tomcat 10",
+  "keywords": ["java", "tomcat", "plantuml"],
   "buildpacks": [
     {
-      "url": "heroku/jvm"
+      "url": "heroku/java"
     }
   ]
 }
