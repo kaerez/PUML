@@ -1,4 +1,4 @@
-name: Safe Update PlantUML (GitHub Status) for PUML-Server-Deployer branch
+name: Safe Update PlantUML Server WAR (GitHub Status) for PUML-Server-Deployer branch
 on: workflow_dispatch
 jobs:
   dummy:
