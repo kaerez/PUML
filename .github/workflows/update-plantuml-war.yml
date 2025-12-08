@@ -27,37 +27,25 @@ jobs:
         run: |
           echo "Fetching latest release info from plantuml/plantuml-server..."
           
-          # 1. Get the Release Data (Tag and Assets)
-          # We fetch the assets list to find the exact URL, avoiding manual construction errors.
+          # 1. Get Release JSON
           RELEASE_JSON=$(gh release view --repo plantuml/plantuml-server --json tagName,assets)
-          
           TAG=$(echo "$RELEASE_JSON" | jq -r .tagName)
-          echo "Latest Tag found: $TAG"
           
-          # 2. Find the specific WAR file URL
-          # We look for a file that looks like 'plantuml-v1.23.war' 
-          # We exclude 'jre8' or 'jsp' variants based on your screenshot preference.
+          # 2. Find the WAR file URL
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("^plantuml-v[0-9.]+\\.war$")) | .url')
-          
-          # 3. Extract Filename from URL
           WAR_NAME=$(basename "$DOWNLOAD_URL")
           
-          echo "Found Asset: $WAR_NAME"
-          echo "Download URL: $DOWNLOAD_URL"
-          
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
-             echo "Error: Could not find a matching WAR file in the assets list."
-             echo "Available assets:"
-             echo "$RELEASE_JSON" | jq -r '.assets[].name'
+             echo "Error: Could not find a matching WAR file."
              exit 1
           fi
 
-          # 4. Check if we already have it
+          # 3. Check for existing file
           if [ -f "$WAR_NAME" ]; then
-            echo "Branch is already on version $TAG ($WAR_NAME)"
+            echo "Branch is already on version $TAG"
             echo "update_needed=false" >> $GITHUB_OUTPUT
           else
-            echo "New version detected."
+            echo "New version detected: $WAR_NAME"
             echo "update_needed=true" >> $GITHUB_OUTPUT
             echo "war_name=$WAR_NAME" >> $GITHUB_OUTPUT
             echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
@@ -69,22 +57,18 @@ jobs:
           URL="${{ steps.check.outputs.download_url }}"
           FILE="${{ steps.check.outputs.war_name }}"
           
-          echo "Downloading $FILE from $URL..."
-          
-          # -f: Fail silently (no output at all) on server errors (404, 500)
-          # -L: Follow redirects
-          # -o: Output file
+          echo "Downloading $FILE..."
           curl -fL -o "$FILE" "$URL"
           
-          # Verify integrity
+          # --- FIX IS HERE ---
+          # We now grep for "Java archive" OR "Zip archive"
           echo "Verifying file structure..."
-          if ! file "$FILE" | grep -q "Zip archive data"; then
-            echo "Error: Downloaded file is corrupt or not a valid WAR archive."
-            # Print file type to see what we actually got (e.g., HTML error page)
-            file "$FILE"
+          if ! file "$FILE" | grep -qE "Zip archive data|Java archive data"; then
+            echo "Error: Downloaded file is corrupt or not a valid archive."
+            file "$FILE" # Print what it actually is for debugging
             exit 1
           fi
-          echo "File verification passed."
+          echo "Verification Passed: $(file "$FILE")"
 
       - name: Stage 1 - Push New Version (Keep Old War)
         if: steps.check.outputs.update_needed == 'true'
@@ -95,7 +79,7 @@ jobs:
           git config user.name "Update Bot"
           git config user.email "bot@users.noreply.github.com"
           
-          # Update Procfile regex to be safe
+          # Update Procfile regex
           sed -i "s/plantuml-.*\.war/$WAR_NAME/" Procfile
           
           git add "$WAR_NAME" Procfile
@@ -116,7 +100,6 @@ jobs:
         run: |
           echo "Waiting for GitHub Deployment Status for commit $COMMIT_SHA in env '$DEPLOY_ENV'..."
           
-          # Loop for 5 minutes
           for i in {1..30}; do
             sleep 10
             
@@ -149,7 +132,6 @@ jobs:
         run: |
           NEW_WAR="${{ steps.check.outputs.war_name }}"
           
-          # Delete old wars
           find . -maxdepth 1 -name "plantuml-*.war" ! -name "$NEW_WAR" -delete
           
           git config user.name "Update Bot"
@@ -174,6 +156,6 @@ jobs:
           git revert --no-edit ${{ steps.deploy_stage.outputs.commit_sha }}
           git push origin HEAD
           
-          echo "Disabling workflow..."
+          # Ensure this matches your filename!
           gh workflow disable "update-plantuml-war.yml"
           exit 1
