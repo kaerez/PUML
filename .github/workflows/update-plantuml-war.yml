@@ -1,9 +1,9 @@
-name: Safe Update PlantUML Server WAR (GitHub Status) for PUML-Server-Deployer branch
+name: Safe Update PlantUML Server WAR (GitHub Status)
 
 on:
   schedule:
-    - cron: '0 4 * * *' # Runs daily at 4:00 AM
-  workflow_dispatch:
+    - cron: '0 4 * * *' # Daily at 4:00 AM
+  workflow_dispatch:    # Allows manual testing of the scheduler logic
 
 permissions:
   contents: write
@@ -20,30 +20,38 @@ jobs:
       - name: Checkout The Branch
         uses: actions/checkout@v4
         with:
-          # CRITICAL: This forces the workflow to operate on your separate branch
+          # CRITICAL: This forces the scheduler (running on main) 
+          # to switch to and operate on your dedicated branch.
           ref: PUML-Server-Deployer
           fetch-depth: 0
 
-      - name: Check for Updates
+      - name: Check for Updates and Get Asset URL
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. Target the CORRECT repository (plantuml-server)
-          # We use the 'plantuml-server' repo now, as confirmed by your link
-          TAG=$(gh release view --repo plantuml/plantuml-server --json tagName --jq .tagName)
+          echo "Fetching latest release info from plantuml/plantuml-server..."
           
-          # 2. Construct Filename
-          # Your link format: .../v1.2025.10/plantuml-v1.2025.10.war
-          # Since TAG is "v1.2025.10", we construct: "plantuml-v1.2025.10.war"
-          WAR_NAME="plantuml-${TAG}.war"
-          DOWNLOAD_URL="https://github.com/plantuml/plantuml-server/releases/download/${TAG}/${WAR_NAME}"
+          # 1. Get Release JSON (Tag and Assets)
+          RELEASE_JSON=$(gh release view --repo plantuml/plantuml-server --json tagName,assets)
+          TAG=$(echo "$RELEASE_JSON" | jq -r .tagName)
           
+          # 2. Find the WAR file URL
+          # Looks for 'plantuml-vX.Y.Z.war' in the asset list
+          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("^plantuml-v[0-9.]+\\.war$")) | .url')
+          WAR_NAME=$(basename "$DOWNLOAD_URL")
+          
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+             echo "Error: Could not find a matching WAR file in assets."
+             exit 1
+          fi
+
+          # 3. Check if we already have it
           if [ -f "$WAR_NAME" ]; then
             echo "Branch is already on version $TAG"
             echo "update_needed=false" >> $GITHUB_OUTPUT
           else
-            echo "New version found: $TAG"
+            echo "New version detected: $WAR_NAME"
             echo "update_needed=true" >> $GITHUB_OUTPUT
             echo "war_name=$WAR_NAME" >> $GITHUB_OUTPUT
             echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
@@ -52,12 +60,20 @@ jobs:
       - name: Download New War
         if: steps.check.outputs.update_needed == 'true'
         run: |
-          curl -L -o "${{ steps.check.outputs.war_name }}" "${{ steps.check.outputs.download_url }}"
+          URL="${{ steps.check.outputs.download_url }}"
+          FILE="${{ steps.check.outputs.war_name }}"
           
-          if ! file "${{ steps.check.outputs.war_name }}" | grep -q "Zip archive data"; then
-            echo "Error: Downloaded file is corrupt or not a zip/war."
+          echo "Downloading $FILE..."
+          curl -fL -o "$FILE" "$URL"
+          
+          # FIX: Accept both Zip and Java archive types
+          echo "Verifying file structure..."
+          if ! file "$FILE" | grep -qE "Zip archive data|Java archive data"; then
+            echo "Error: Downloaded file is corrupt or not a valid archive."
+            file "$FILE"
             exit 1
           fi
+          echo "Verification Passed."
 
       - name: Stage 1 - Push New Version
         if: steps.check.outputs.update_needed == 'true'
@@ -68,13 +84,13 @@ jobs:
           git config user.name "Update Bot"
           git config user.email "bot@users.noreply.github.com"
           
-          # Update Procfile to point to the new WAR
+          # Update Procfile regex
           sed -i "s/plantuml-.*\.war/$WAR_NAME/" Procfile
           
           git add "$WAR_NAME" Procfile
           git commit -m "Deploy: Update to $WAR_NAME"
           
-          # Push to the BRANCH we checked out (PUML-Server-Deployer)
+          # Push to HEAD (which is PUML-Server-Deployer due to checkout step)
           git push origin HEAD
           
           echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
@@ -91,6 +107,7 @@ jobs:
           
           for i in {1..30}; do
             sleep 10
+            
             DEPLOYMENTS=$(gh api "repos/$REPO/deployments?sha=$COMMIT_SHA&environment=$DEPLOY_ENV")
             DEP_ID=$(echo "$DEPLOYMENTS" | jq -r '.[0].id // empty')
             
@@ -133,6 +150,10 @@ jobs:
         run: |
           git config user.name "Update Bot"
           git config user.email "bot@users.noreply.github.com"
+          
           git revert --no-edit ${{ steps.deploy_stage.outputs.commit_sha }}
           git push origin HEAD
+          
+          echo "Disabling workflow..."
+          gh workflow disable "update-plantuml-war.yml"
           exit 1
