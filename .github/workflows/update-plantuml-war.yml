@@ -153,5 +153,5 @@ jobs:
           git push origin HEAD
           
           echo "Rolled back. Disabling workflow..."
-          gh workflow disable "Manual Update PlantUML (Branch)"
+          gh workflow disable "update-plantuml-war.yml"
           exit 1
