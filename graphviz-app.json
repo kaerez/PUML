@@ -1,0 +1,13 @@
+{
+  "name": "PlantUML Server",
+  "description": "PlantUML server running via picoweb",
+  "keywords": ["java", "plantuml", "graphviz"],
+  "buildpacks": [
+    {
+      "url": "https://github.com/weibeld/heroku-buildpack-graphviz"
+    },
+    {
+      "url": "heroku/jvm"
+    }
+  ]
+}
