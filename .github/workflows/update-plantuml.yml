@@ -1,8 +1,8 @@
 name: Safe Update PlantUML (GitHub Status)
 
 on:
-  schedule:
-    - cron: '0 4 * * *' # Daily at 4am
+  #schedule:
+  #  - cron: '0 4 * * *' # Daily at 4am
   workflow_dispatch:
 
 permissions:
