@@ -1,0 +1,140 @@
+name: Deploy custom static content to Pages
+# Provided AS-IS to the world, fully functional but I cannot accept any liability.
+# @kaerez - Erez Kalman - www.kalman.co.il
+
+# =====================================================================================
+# 1. TRIGGER CONFIGURATION
+# -------------------------------------------------------------------------------------
+# NOTE: GitHub Actions does NOT allow variables in this section.
+# YOU MUST MANUALLY UPDATE the paths below to match the extensions you want to support.
+# =====================================================================================
+on:
+  push:
+    branches: ["main"]
+    paths:
+      # Update these to match your desired file types!
+      - "**.html"
+      - "**.md"
+#      - "**.txt"
+#      - "**.json"
+
+  workflow_dispatch:
+    inputs:
+      force_raw_mode:
+        description: 'Force Raw Mode (.nojekyll)'
+        type: boolean
+        required: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  # =================================================================================
+  # 2. CONTENT & PATH CONFIGURATION (User Settings)
+  # =================================================================================
+  
+  # SPACE-SEPARATED list of file extensions to publish.
+  # Example: "html md txt json"
+  # (Do not add dots, just the extension name)
+  INCLUDED_EXTENSIONS: "html md"
+
+  # WHERE to look for files.
+  # Use "." for the root of the repository.
+  # Use "./docs" to only publish files inside the docs folder.
+  TARGET_PATH: "."
+
+  # SEARCH DEPTH
+  # "true"  = Recursive (All subfolders inside TARGET_PATH)
+  # "false" = Root Only (Only files directly in TARGET_PATH, no subfolders)
+  RECURSIVE_SEARCH: "false"
+
+  # JEKYLL / RAW MODE SETTING
+  # "false" (Default):
+  #   - .md files are converted to HTML by Jekyll.
+  #   - Files/Folders starting with '_' are BLOCKED (404 Not Found).
+  # "true":
+  #   - .nojekyll is added.
+  #   - .md files are served as raw text.
+  #   - Files/Folders starting with '_' are ACCESSIBLE.
+  SERVE_AS_RAW_TEXT: "false"
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # LOGIC STEP: Filters files based on your settings above
+      # =========================================================================
+      - name: Filter and Prepare Content
+        run: |
+          echo "Starting Content Preparation..."
+          
+          # 1. Create a clean staging directory
+          mkdir _site
+          
+          # 2. Determine Depth argument for 'find' command
+          if [[ "${{ env.RECURSIVE_SEARCH }}" == "true" ]]; then
+            DEPTH_ARG="" # Empty means infinite depth
+            echo "Search Mode: Recursive (All Subfolders)"
+          else
+            DEPTH_ARG="-maxdepth 1"
+            echo "Search Mode: Root Level Only (No Subfolders)"
+          fi
+
+          # 3. Convert space-separated extensions to Regex for grep
+          # Input: "html md txt" -> Output: "html|md|txt"
+          EXT_REGEX=$(echo "${{ env.INCLUDED_EXTENSIONS }}" | sed 's/ /|/g')
+          echo "Filtering for extensions: $EXT_REGEX"
+
+          # 4. Find files, Filter by Extension, and Copy
+          # Explanation of command:
+          # find ...        -> Looks for files in TARGET_PATH with specific DEPTH
+          # grep -E ...     -> Filters results to only match allowed extensions (case insensitive)
+          # xargs -I {} ... -> Takes the found file list and copies them to _site
+          # cp --parents    -> Keeps the folder structure (e.g. docs/index.html stays in docs/)
+          
+          find "${{ env.TARGET_PATH }}" $DEPTH_ARG -type f -not -path "./.git/*" \
+            | grep -E "\.($EXT_REGEX)$" \
+            | xargs -I {} cp --parents {} _site/
+
+          echo "------------------------------------------------"
+          echo "Files successfully staged for deployment:"
+          ls -R _site
+          echo "------------------------------------------------"
+
+          # 5. Handle Jekyll / Raw Text Mode
+          if [[ "${{ env.SERVE_AS_RAW_TEXT }}" == "true" ]] || [[ "${{ inputs.force_raw_mode }}" == "true" ]]; then
+            echo "NOTICE: Raw Mode Enabled."
+            echo "-> Adding .nojekyll file."
+            echo "-> Markdown will NOT render."
+            echo "-> Files starting with '_' will be visible."
+            touch _site/.nojekyll
+          else
+            echo "NOTICE: Standard Jekyll Mode."
+            echo "-> Markdown will render as HTML."
+            echo "-> Files starting with '_' are HIDDEN (404)."
+          fi
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '_site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
