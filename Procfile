@@ -1,1 +1,1 @@
-web: java -jar plantuml-1.2025.10.jar -picoweb:$PORT
+web: java -jar webapp-runner.jar --port $PORT plantuml-v1.2025.10.war
