@@ -1,76 +1,80 @@
-name: Safe Update PlantUML (GitHub Status)
+name: Safe Update PlantUML WAR (Current Branch)
 
 on:
-  #schedule:
-  #  - cron: '0 4 * * *' # Daily at 4am
+  schedule:
+    - cron: '0 4 * * *' # Daily at 4am
   workflow_dispatch:
 
 permissions:
   contents: write
-  deployments: read # Required to read the deployment status
-  actions: write    # Required to disable workflow on failure
+  deployments: read
+  actions: write
 
 jobs:
   update-and-verify:
     runs-on: ubuntu-latest
     env:
-      DEPLOY_ENV: "puml" # GH Action Heroku Deploy Environment name
+      DEPLOY_ENV: "puml-server" # Heroku Environment Name
     
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # We don't specify 'ref' so it checks out the branch that triggered the workflow
 
       - name: Check for Updates
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 1. Get latest tag (e.g., v1.2025.10)
           TAG=$(gh release view --repo plantuml/plantuml --json tagName --jq .tagName)
-          VERSION=${TAG#v}
-          JAR_NAME="plantuml-${VERSION}.jar"
-          DOWNLOAD_URL="https://github.com/plantuml/plantuml/releases/download/${TAG}/${JAR_NAME}"
           
-          if [ -f "$JAR_NAME" ]; then
+          # 2. Construct Filename (preserving the 'v')
+          WAR_NAME="plantuml-${TAG}.war"
+          DOWNLOAD_URL="https://github.com/plantuml/plantuml/releases/download/${TAG}/${WAR_NAME}"
+          
+          if [ -f "$WAR_NAME" ]; then
             echo "Already on latest version."
             echo "update_needed=false" >> $GITHUB_OUTPUT
           else
-            echo "New version found: $VERSION"
+            echo "New version found: $TAG"
             echo "update_needed=true" >> $GITHUB_OUTPUT
-            echo "jar_name=$JAR_NAME" >> $GITHUB_OUTPUT
+            echo "war_name=$WAR_NAME" >> $GITHUB_OUTPUT
             echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
           fi
 
-      - name: Download New Jar
+      - name: Download New War
         if: steps.check.outputs.update_needed == 'true'
         run: |
-          curl -L -o "${{ steps.check.outputs.jar_name }}" "${{ steps.check.outputs.download_url }}"
+          curl -L -o "${{ steps.check.outputs.war_name }}" "${{ steps.check.outputs.download_url }}"
           
-          # Verify it's a valid zip/jar file
-          if ! file "${{ steps.check.outputs.jar_name }}" | grep -q "Zip archive data"; then
+          if ! file "${{ steps.check.outputs.war_name }}" | grep -q "Zip archive data"; then
             echo "Error: Corrupt file."
             exit 1
           fi
 
-      - name: Stage 1 - Push New Version (Keep Old Jar)
+      - name: Stage 1 - Push New Version (Keep Old War)
         if: steps.check.outputs.update_needed == 'true'
         id: deploy_stage
         run: |
-          JAR_NAME="${{ steps.check.outputs.jar_name }}"
+          WAR_NAME="${{ steps.check.outputs.war_name }}"
           
           git config user.name "Update Bot"
           git config user.email "bot@users.noreply.github.com"
           
-          # Update Procfile
-          sed -i "s/plantuml-[0-9.]*\.jar/$JAR_NAME/" Procfile
+          # Update Procfile to point to the new WAR
+          # Regex matches 'plantuml-*.war' to handle variable version lengths
+          sed -i "s/plantuml-.*\.war/$WAR_NAME/" Procfile
           
-          # Add new files (Old JAR remains in repo for safety)
-          git add "$JAR_NAME" Procfile
-          git commit -m "Deploy: Update to $JAR_NAME"
-          git push origin main
+          # Add new files
+          git add "$WAR_NAME" Procfile
+          git commit -m "Deploy: Update to $WAR_NAME"
           
-          # Output Commit SHA to track the deployment status
+          # PUSH TO CURRENT BRANCH (HEAD)
+          git push origin HEAD
+          
           echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Monitor GitHub Deployment Status
@@ -83,56 +87,49 @@ jobs:
         run: |
           echo "Waiting for GitHub Deployment Status for commit $COMMIT_SHA in env '$DEPLOY_ENV'..."
           
-          # We loop for 5 minutes (30 checks * 10 seconds)
           for i in {1..30}; do
             sleep 10
             
-            # 1. Find the Deployment ID associated with this Commit SHA and Environment
-            # We filter by 'sha' and 'environment' to match exactly what is in your screenshot
+            # Filter deployments by SHA and Environment
             DEPLOYMENTS=$(gh api "repos/$REPO/deployments?sha=$COMMIT_SHA&environment=$DEPLOY_ENV")
             DEP_ID=$(echo "$DEPLOYMENTS" | jq -r '.[0].id // empty')
             
             if [ -z "$DEP_ID" ]; then
-              echo "Attempt $i: Deployment not created yet by Heroku..."
+              echo "Attempt $i: Waiting for Heroku to report deployment..."
               continue
             fi
             
-            # 2. Get the STATUS of that Deployment (success, failure, etc.)
             STATUSES=$(gh api "repos/$REPO/deployments/$DEP_ID/statuses")
             STATE=$(echo "$STATUSES" | jq -r '.[0].state // "pending"')
             
-            echo "Attempt $i: Deployment ID $DEP_ID state is '$STATE'"
+            echo "Attempt $i: Status is '$STATE'"
             
             if [ "$STATE" == "success" ]; then
-              echo "Deployment Successful!"
               echo "result=success" >> $GITHUB_OUTPUT
               exit 0
             elif [ "$STATE" == "failure" ] || [ "$STATE" == "error" ]; then
-              echo "Deployment Failed!"
               echo "result=failure" >> $GITHUB_OUTPUT
               exit 0
             fi
-            # If pending/in_progress, we loop again
           done
           
-          echo "Timeout waiting for deployment status."
           echo "result=timeout" >> $GITHUB_OUTPUT
 
-      - name: Stage 2 - Cleanup Old Jar (Only if Green)
+      - name: Stage 2 - Cleanup Old War (Only if Green)
         if: steps.monitor.outputs.result == 'success'
         run: |
-          NEW_JAR="${{ steps.check.outputs.jar_name }}"
+          NEW_WAR="${{ steps.check.outputs.war_name }}"
           
-          # Delete old jars
-          find . -maxdepth 1 -name "plantuml-*.jar" ! -name "$NEW_JAR" -delete
+          # Delete any plantuml WAR that is NOT the new one
+          find . -maxdepth 1 -name "plantuml-*.war" ! -name "$NEW_WAR" -delete
           
           git config user.name "Update Bot"
           git config user.email "bot@users.noreply.github.com"
           
           git add .
           if ! git diff --staged --quiet; then
-            git commit -m "Cleanup: Removed old JARs"
-            git push origin main
+            git commit -m "Cleanup: Removed old WARs"
+            git push origin HEAD
           fi
 
       - name: Rollback (If Red/Timeout)
@@ -141,14 +138,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Deployment failed. Rolling back..."
-          
           git config user.name "Update Bot"
           git config user.email "bot@users.noreply.github.com"
           
-          # Revert changes to restore old Procfile and old JAR
           git revert --no-edit ${{ steps.deploy_stage.outputs.commit_sha }}
-          git push origin main
+          git push origin HEAD
           
-          echo "Rolled back. Disabling workflow..."
-          gh workflow disable "Safe Update PlantUML (GitHub Status)"
+          gh workflow disable "Safe Update PlantUML WAR (GitHub Status)"
           exit 1
