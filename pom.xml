@@ -5,7 +5,6 @@
     <groupId>com.example</groupId>
     <artifactId>plantuml-runner-setup</artifactId>
     <version>1.0</version>
-    
     <packaging>pom</packaging>
 
     <build>
