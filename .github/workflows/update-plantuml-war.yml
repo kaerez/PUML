@@ -1,7 +1,138 @@
 name: Safe Update PlantUML Server WAR (GitHub Status) for PUML-Server-Deployer branch
-on: workflow_dispatch
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # Runs daily at 4:00 AM
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  deployments: read
+  actions: write
+
 jobs:
-  dummy:
+  update-branch:
     runs-on: ubuntu-latest
+    env:
+      DEPLOY_ENV: "puml-server"
+    
     steps:
-      - run: echo "Placeholder to enable UI button"
+      - name: Checkout The Branch
+        uses: actions/checkout@v4
+        with:
+          # CRITICAL: This forces the workflow to operate on your separate branch
+          ref: PUML-Server-Deployer
+          fetch-depth: 0
+
+      - name: Check for Updates
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 1. Target the CORRECT repository (plantuml-server)
+          # We use the 'plantuml-server' repo now, as confirmed by your link
+          TAG=$(gh release view --repo plantuml/plantuml-server --json tagName --jq .tagName)
+          
+          # 2. Construct Filename
+          # Your link format: .../v1.2025.10/plantuml-v1.2025.10.war
+          # Since TAG is "v1.2025.10", we construct: "plantuml-v1.2025.10.war"
+          WAR_NAME="plantuml-${TAG}.war"
+          DOWNLOAD_URL="https://github.com/plantuml/plantuml-server/releases/download/${TAG}/${WAR_NAME}"
+          
+          if [ -f "$WAR_NAME" ]; then
+            echo "Branch is already on version $TAG"
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version found: $TAG"
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+            echo "war_name=$WAR_NAME" >> $GITHUB_OUTPUT
+            echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download New War
+        if: steps.check.outputs.update_needed == 'true'
+        run: |
+          curl -L -o "${{ steps.check.outputs.war_name }}" "${{ steps.check.outputs.download_url }}"
+          
+          if ! file "${{ steps.check.outputs.war_name }}" | grep -q "Zip archive data"; then
+            echo "Error: Downloaded file is corrupt or not a zip/war."
+            exit 1
+          fi
+
+      - name: Stage 1 - Push New Version
+        if: steps.check.outputs.update_needed == 'true'
+        id: deploy_stage
+        run: |
+          WAR_NAME="${{ steps.check.outputs.war_name }}"
+          
+          git config user.name "Update Bot"
+          git config user.email "bot@users.noreply.github.com"
+          
+          # Update Procfile to point to the new WAR
+          sed -i "s/plantuml-.*\.war/$WAR_NAME/" Procfile
+          
+          git add "$WAR_NAME" Procfile
+          git commit -m "Deploy: Update to $WAR_NAME"
+          
+          # Push to the BRANCH we checked out (PUML-Server-Deployer)
+          git push origin HEAD
+          
+          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Monitor Deployment
+        if: steps.check.outputs.update_needed == 'true'
+        id: monitor
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ steps.deploy_stage.outputs.commit_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Monitoring deployment for commit $COMMIT_SHA..."
+          
+          for i in {1..30}; do
+            sleep 10
+            DEPLOYMENTS=$(gh api "repos/$REPO/deployments?sha=$COMMIT_SHA&environment=$DEPLOY_ENV")
+            DEP_ID=$(echo "$DEPLOYMENTS" | jq -r '.[0].id // empty')
+            
+            if [ -z "$DEP_ID" ]; then
+               continue
+            fi
+            
+            STATUSES=$(gh api "repos/$REPO/deployments/$DEP_ID/statuses")
+            STATE=$(echo "$STATUSES" | jq -r '.[0].state // "pending"')
+            
+            if [ "$STATE" == "success" ]; then
+              echo "result=success" >> $GITHUB_OUTPUT
+              exit 0
+            elif [ "$STATE" == "failure" ] || [ "$STATE" == "error" ]; then
+              echo "result=failure" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          done
+          echo "result=timeout" >> $GITHUB_OUTPUT
+
+      - name: Stage 2 - Cleanup
+        if: steps.monitor.outputs.result == 'success'
+        run: |
+          NEW_WAR="${{ steps.check.outputs.war_name }}"
+          find . -maxdepth 1 -name "plantuml-*.war" ! -name "$NEW_WAR" -delete
+          
+          git config user.name "Update Bot"
+          git config user.email "bot@users.noreply.github.com"
+          
+          git add .
+          if ! git diff --staged --quiet; then
+            git commit -m "Cleanup: Removed old WARs"
+            git push origin HEAD
+          fi
+
+      - name: Rollback
+        if: contains(fromJson('["failure", "timeout"]'), steps.monitor.outputs.result)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "Update Bot"
+          git config user.email "bot@users.noreply.github.com"
+          git revert --no-edit ${{ steps.deploy_stage.outputs.commit_sha }}
+          git push origin HEAD
+          exit 1
