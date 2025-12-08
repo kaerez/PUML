@@ -1,0 +1,10 @@
+{
+  "name": "Java Server",
+  "description": "Java application running with picoweb argument",
+  "keywords": ["java", "picoweb"],
+  "buildpacks": [
+    {
+      "url": "heroku/jvm"
+    }
+  ]
+}
