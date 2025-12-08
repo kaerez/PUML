@@ -1,17 +1,15 @@
-name: Safe Update PlantUML WAR (Current Branch)
+name: Safe Update PlantUML Server WAR (GitHub Status) for PUML-Server-Deployer branch
 
 on:
-  schedule:
-    - cron: '0 4 * * *' # Daily at 4am
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual triggering via CLI or UI
 
 permissions:
   contents: write
-  deployments: read
-  actions: write
+  deployments: read # Required to read the deployment status
+  actions: write    # Required to disable workflow on failure
 
 jobs:
-  update-and-verify:
+  update-branch:
     runs-on: ubuntu-latest
     env:
       DEPLOY_ENV: "puml-server" # Heroku Environment Name
@@ -21,22 +19,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # We don't specify 'ref' so it checks out the branch that triggered the workflow
+          # No 'ref' needed; defaults to the current branch (PUML-Server-Deployer)
 
       - name: Check for Updates
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. Get latest tag (e.g., v1.2025.10)
-          TAG=$(gh release view --repo plantuml/plantuml --json tagName --jq .tagName)
+          # 1. Target the 'plantuml-server' repo
+          TAG=$(gh release view --repo plantuml/plantuml-server --json tagName --jq .tagName)
           
-          # 2. Construct Filename (preserving the 'v')
+          # 2. Construct Filename
+          # URL format: .../v1.2025.10/plantuml-v1.2025.10.war
           WAR_NAME="plantuml-${TAG}.war"
-          DOWNLOAD_URL="https://github.com/plantuml/plantuml/releases/download/${TAG}/${WAR_NAME}"
+          DOWNLOAD_URL="https://github.com/plantuml/plantuml-server/releases/download/${TAG}/${WAR_NAME}"
           
           if [ -f "$WAR_NAME" ]; then
-            echo "Already on latest version."
+            echo "Branch is already on version $TAG"
             echo "update_needed=false" >> $GITHUB_OUTPUT
           else
             echo "New version found: $TAG"
@@ -50,8 +49,9 @@ jobs:
         run: |
           curl -L -o "${{ steps.check.outputs.war_name }}" "${{ steps.check.outputs.download_url }}"
           
+          # Verify file integrity (basic check)
           if ! file "${{ steps.check.outputs.war_name }}" | grep -q "Zip archive data"; then
-            echo "Error: Corrupt file."
+            echo "Error: Downloaded file is corrupt or not a valid WAR archive."
             exit 1
           fi
 
@@ -65,16 +65,17 @@ jobs:
           git config user.email "bot@users.noreply.github.com"
           
           # Update Procfile to point to the new WAR
-          # Regex matches 'plantuml-*.war' to handle variable version lengths
+          # Regex matches 'plantuml-*.war' to handle variable version strings
           sed -i "s/plantuml-.*\.war/$WAR_NAME/" Procfile
           
-          # Add new files
+          # Add new files (Old WAR remains in repo for safety during deployment)
           git add "$WAR_NAME" Procfile
           git commit -m "Deploy: Update to $WAR_NAME"
           
-          # PUSH TO CURRENT BRANCH (HEAD)
+          # Push to the current branch
           git push origin HEAD
           
+          # Output Commit SHA to track the deployment status
           echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Monitor GitHub Deployment Status
@@ -87,32 +88,37 @@ jobs:
         run: |
           echo "Waiting for GitHub Deployment Status for commit $COMMIT_SHA in env '$DEPLOY_ENV'..."
           
+          # Loop for 5 minutes (30 checks * 10 seconds)
           for i in {1..30}; do
             sleep 10
             
-            # Filter deployments by SHA and Environment
+            # 1. Find the Deployment ID associated with this Commit SHA and Environment
             DEPLOYMENTS=$(gh api "repos/$REPO/deployments?sha=$COMMIT_SHA&environment=$DEPLOY_ENV")
             DEP_ID=$(echo "$DEPLOYMENTS" | jq -r '.[0].id // empty')
             
             if [ -z "$DEP_ID" ]; then
-              echo "Attempt $i: Waiting for Heroku to report deployment..."
+              echo "Attempt $i: Deployment not created yet by Heroku..."
               continue
             fi
             
+            # 2. Get the STATUS of that Deployment
             STATUSES=$(gh api "repos/$REPO/deployments/$DEP_ID/statuses")
             STATE=$(echo "$STATUSES" | jq -r '.[0].state // "pending"')
             
-            echo "Attempt $i: Status is '$STATE'"
+            echo "Attempt $i: Deployment ID $DEP_ID state is '$STATE'"
             
             if [ "$STATE" == "success" ]; then
+              echo "Deployment Successful!"
               echo "result=success" >> $GITHUB_OUTPUT
               exit 0
             elif [ "$STATE" == "failure" ] || [ "$STATE" == "error" ]; then
+              echo "Deployment Failed!"
               echo "result=failure" >> $GITHUB_OUTPUT
               exit 0
             fi
           done
           
+          echo "Timeout waiting for deployment status."
           echo "result=timeout" >> $GITHUB_OUTPUT
 
       - name: Stage 2 - Cleanup Old War (Only if Green)
@@ -138,11 +144,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Deployment failed. Rolling back..."
+          
           git config user.name "Update Bot"
           git config user.email "bot@users.noreply.github.com"
           
+          # Revert changes to restore old Procfile and old WAR
           git revert --no-edit ${{ steps.deploy_stage.outputs.commit_sha }}
           git push origin HEAD
           
-          gh workflow disable "Safe Update PlantUML WAR (GitHub Status)"
+          echo "Rolled back. Disabling workflow..."
+          gh workflow disable "Manual Update PlantUML (Branch)"
           exit 1
