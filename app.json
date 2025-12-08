@@ -1,10 +1,11 @@
 {
-  "name": "Java Server",
-  "description": "Java application running with picoweb argument",
-  "keywords": ["java", "picoweb"],
+  "name": "PlantUML Server",
   "buildpacks": [
     {
-      "url": "heroku/jvm"
+      "url": "https://github.com/heroku/heroku-buildpack-nginx"
+    },
+    {
+      "url": "heroku/java"
     }
   ]
 }
