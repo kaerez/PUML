@@ -1,0 +1,7 @@
+name: Safe Update PlantUML (GitHub Status) for PUML-Server-Deployer branch
+on: workflow_dispatch
+jobs:
+  dummy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Placeholder to enable UI button"
