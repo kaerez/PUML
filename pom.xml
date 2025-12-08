@@ -3,9 +3,10 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.example</groupId>
-    <artifactId>plantuml-server</artifactId>
+    <artifactId>plantuml-runner-setup</artifactId>
     <version>1.0</version>
-    <packaging>war</packaging>
+    
+    <packaging>pom</packaging>
 
     <build>
         <plugins>
@@ -22,16 +23,8 @@
                                 <artifactItem>
                                     <groupId>com.heroku</groupId>
                                     <artifactId>webapp-runner</artifactId>
-                                    <version>10.1.17.0</version>
+                                    <version>10.1.24.0</version>
                                     <destFileName>webapp-runner.jar</destFileName>
-                                </artifactItem>
-                                
-                                <artifactItem>
-                                    <groupId>net.sourceforge.plantuml</groupId>
-                                    <artifactId>plantuml-server</artifactId>
-                                    <version>1.2025.10</version>
-                                    <type>war</type>
-                                    <destFileName>plantuml.war</destFileName>
                                 </artifactItem>
                             </artifactItems>
                             <outputDirectory>${project.build.directory}/dependency</outputDirectory>
